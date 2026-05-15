@@ -214,11 +214,41 @@ section.main [data-testid="stMetric"] [data-testid="stMetricValue"] > div {
 </style>
 """
 
+TAB_HOVER_PURPLE_CSS = """
+<style>
+/* st.tabs: 호버 시 빨간 강조 → 보라 (메인 영역만) */
+section.main .stTabs [data-baseweb="tab"]:hover,
+section.main .stTabs [data-baseweb="tab"]:focus {
+    color: #5b21b6 !important;
+}
+section.main .stTabs [data-baseweb="tab"]:hover p,
+section.main .stTabs [data-baseweb="tab"]:hover div,
+section.main .stTabs [data-baseweb="tab"]:focus p,
+section.main .stTabs [data-baseweb="tab"]:focus div {
+    color: #5b21b6 !important;
+}
+section.main .stTabs [data-baseweb="tab-highlight"] {
+    background-color: #7c3aed !important;
+}
+section.main [data-testid="stTabs"] button:hover,
+section.main [data-testid="stTabs"] button:focus-visible {
+    color: #5b21b6 !important;
+    border-color: #7c3aed !important;
+    outline-color: #a78bfa !important;
+}
+</style>
+"""
+
+
 DASH_USER_ACCENTS = ("#4f46e5", "#0d9488", "#db2777", "#d97706", "#7c3aed", "#059669")
 
 
 def inject_dashboard_metric_styles() -> None:
     st.markdown(DASH_METRIC_CSS, unsafe_allow_html=True)
+
+
+def inject_tab_purple_hover_styles() -> None:
+    st.markdown(TAB_HOVER_PURPLE_CSS, unsafe_allow_html=True)
 
 KR_WEEKDAY_SHORT = ["월", "화", "수", "목", "금", "토", "일"]
 KR_WEEKDAY_LONG = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
@@ -940,6 +970,10 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+
+    if not st.session_state.get("_tab_purple_hover_css_loaded"):
+        inject_tab_purple_hover_styles()
+        st.session_state["_tab_purple_hover_css_loaded"] = True
 
     with st.sidebar:
         st.markdown("## 💬 카카오톡 대화 분석기")
