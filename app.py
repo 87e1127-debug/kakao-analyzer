@@ -7,8 +7,10 @@ import html
 import os
 import platform
 import re
+import tempfile
 from collections import Counter
 from datetime import datetime
+from pathlib import Path
 from typing import BinaryIO
 
 import pandas as pd
@@ -17,7 +19,170 @@ import plotly.graph_objects as go
 import streamlit as st
 from wordcloud import WordCloud
 
+_APP_DIR = Path(__file__).resolve().parent
+_FONT_DIR = _APP_DIR / "fonts"
+_PRIMARY_BUNDLED_FONT = _FONT_DIR / "NanumGothic-Regular.ttf"
+
+
+_HANGUL_SYL_START = 0xAC00
+_HANGUL_SYL_END = 0xD7A3
+
+
+def _pil_truetype_ok(path: str) -> bool:
+    """PIL로 TTF/OTF/TTC 열기 검사."""
+    try:
+        from PIL import ImageFont
+
+        ImageFont.truetype(path, 40)
+        return True
+    except OSError:
+        return False
+
+
+def _font_cmap_contains_hangul(path: str) -> bool:
+    """cmap에 한글 음절이 있는지 확인(잘못된/영문 전용 파일이 Nanum 이름으로 올라온 경우 제외)."""
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError:
+        return True
+
+    ext = Path(path).suffix.lower()
+    try:
+        if ext == ".ttc":
+            for i in range(24):
+                try:
+                    font = TTFont(path, fontNumber=i)
+                except Exception:
+                    break
+                cmap = font.getBestCmap()
+                if cmap and any(_HANGUL_SYL_START <= cp <= _HANGUL_SYL_END for cp in cmap):
+                    return True
+            return False
+        font = TTFont(path, fontNumber=0)
+        cmap = font.getBestCmap()
+        if not cmap:
+            return False
+        return any(_HANGUL_SYL_START <= cp <= _HANGUL_SYL_END for cp in cmap)
+    except Exception:
+        return True
+
+
+def _font_ok_for_korean_wordcloud(path: str) -> bool:
+    return _pil_truetype_ok(path) and _font_cmap_contains_hangul(path)
+
+
+def materialize_font_for_cloud(src: str) -> tuple[str, list[str]]:
+    """읽기 전용 볼륨 등에서 안정적으로 열리도록 임시 디렉터리에 복사. (경로, 삭제할 임시파일 목록)."""
+    cleanup: list[str] = []
+    try:
+        raw = Path(src).read_bytes()
+    except OSError:
+        return src, cleanup
+    if len(raw) < 4096:
+        return src, cleanup
+    suf = Path(src).suffix.lower() or ".ttf"
+    fd, tmp = tempfile.mkstemp(prefix="wcfont_", suffix=suf)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write(raw)
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return src, cleanup
+    cleanup.append(tmp)
+    return tmp, cleanup
+
+
+def bundled_wordcloud_font_path() -> str | None:
+    """프로젝트 `fonts/` 내 TTF. 나눔고딕 파일명 우선, 없으면 같은 폴더의 첫 번째 .ttf."""
+    candidates: list[Path] = []
+    if _PRIMARY_BUNDLED_FONT.is_file():
+        candidates.append(_PRIMARY_BUNDLED_FONT)
+    if _FONT_DIR.is_dir():
+        for p in sorted(_FONT_DIR.glob("*.ttf")):
+            if p.is_file() and p.resolve() not in {c.resolve() for c in candidates}:
+                candidates.append(p)
+        for p in sorted(_FONT_DIR.glob("*.otf")):
+            if p.is_file():
+                candidates.append(p)
+    for p in candidates:
+        s = str(p.resolve())
+        if _font_ok_for_korean_wordcloud(s):
+            return s
+    return None
+
+
+def system_korean_font_path() -> str | None:
+    """OS 기본 한글 폰트(번들이 없을 때). Linux는 Streamlit / Debian 계열 경로 포함."""
+    sysname = platform.system()
+    if sysname == "Windows":
+        p = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "malgun.ttf")
+        return p if os.path.isfile(p) and _font_ok_for_korean_wordcloud(p) else None
+    if sysname == "Darwin":
+        for p in (
+            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+            "/Library/Fonts/AppleGothic.ttf",
+            "/System/Library/Fonts/AppleGothic.ttf",
+        ):
+            if os.path.isfile(p) and _font_ok_for_korean_wordcloud(p):
+                return os.path.abspath(p)
+        return None
+    for p in (
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ):
+        if os.path.isfile(p) and _font_ok_for_korean_wordcloud(p):
+            return os.path.abspath(p)
+    return None
+
+
+def iter_wordcloud_font_candidates(explicit: str | None) -> list[str]:
+    """워드클라우드에 쓸 font_path 후보(앞이 우선). 번들 → 명시 경로 → 시스템."""
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def add(p: str | None) -> None:
+        if not p:
+            return
+        ap = os.path.abspath(p) if os.path.isfile(p) else p
+        if not os.path.isfile(ap):
+            return
+        if ap in seen:
+            return
+        if not _font_ok_for_korean_wordcloud(ap):
+            return
+        seen.add(ap)
+        out.append(ap)
+
+    add(bundled_wordcloud_font_path())
+    if explicit:
+        ep = os.path.abspath(os.path.expanduser(str(explicit).strip()))
+        if os.path.isfile(ep):
+            add(ep)
+    add(system_korean_font_path())
+    if _FONT_DIR.is_dir():
+        for p in sorted(_FONT_DIR.glob("*.ttf")):
+            add(str(p.resolve()))
+        for p in sorted(_FONT_DIR.glob("*.otf")):
+            add(str(p.resolve()))
+    return out
+
+
 CHART_FONT = "Malgun Gothic, Apple SD Gothic Neo, Pretendard, sans-serif"
+
+
+def get_korean_font_path() -> str | None:
+    """UI 표시용: 번들 → 시스템 순."""
+    b = bundled_wordcloud_font_path()
+    if b:
+        return b
+    return system_korean_font_path()
+
+
 CHART_LAYOUT = dict(
     template="plotly_white",
     font=dict(family=CHART_FONT, size=13, color="#1a1a2e"),
@@ -121,24 +286,6 @@ def tokenize_for_wordfreq(text: str) -> list[str]:
             continue
         out.append(w)
     return out
-
-
-def get_korean_font_path() -> str | None:
-    sysname = platform.system()
-    if sysname == "Windows":
-        p = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "malgun.ttf")
-        return p if os.path.isfile(p) else None
-    if sysname == "Darwin":
-        candidates = (
-            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
-            "/Library/Fonts/AppleGothic.ttf",
-            "/System/Library/Fonts/AppleGothic.ttf",
-        )
-        for p in candidates:
-            if os.path.isfile(p):
-                return p
-        return None
-    return None
 
 
 def global_word_counter(df: pd.DataFrame) -> Counter[str]:
@@ -258,8 +405,9 @@ def fig_laugh_compare(series: pd.Series, ch: str, title: str) -> go.Figure:
 def build_wordcloud_image(freq: dict[str, int], font_path: str | None) -> io.BytesIO | None:
     if not freq:
         return None
-    wc = WordCloud(
-        font_path=font_path,
+
+    candidates = iter_wordcloud_font_candidates(font_path)
+    base_kw: dict = dict(
         width=1100,
         height=550,
         background_color="white",
@@ -269,11 +417,43 @@ def build_wordcloud_image(freq: dict[str, int], font_path: str | None) -> io.Byt
         min_font_size=10,
         relative_scaling=0.45,
     )
-    wc.generate_from_frequencies(freq)
-    buf = io.BytesIO()
-    wc.to_image().save(buf, format="PNG")
-    buf.seek(0)
-    return buf
+
+    last_err: Exception | None = None
+    for fp in candidates:
+        use_fp, cleanup_paths = materialize_font_for_cloud(fp)
+        try:
+            wc = WordCloud(font_path=use_fp, **base_kw)
+            wc.generate_from_frequencies(freq)
+            buf = io.BytesIO()
+            wc.to_image().save(buf, format="PNG")
+            buf.seek(0)
+            return buf
+        except (OSError, ValueError, RuntimeError) as e:
+            last_err = e
+            continue
+        finally:
+            for p in cleanup_paths:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+    try:
+        wc = WordCloud(**base_kw)
+        wc.generate_from_frequencies(freq)
+        buf = io.BytesIO()
+        wc.to_image().save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+    except (OSError, ValueError, RuntimeError) as e:
+        last_err = e
+
+    st.warning(
+        "워드클라우드용 폰트를 불러오지 못했습니다. "
+        "`fonts/NanumGothic-Regular.ttf`가 **실제 TTF(수 MB)** 로 커밋됐는지, "
+        f"Git LFS 포인터가 아닌지 확인하세요. ({last_err!r})"
+    )
+    return None
 
 
 def _load_csv(file: BinaryIO) -> pd.DataFrame:
@@ -1043,9 +1223,27 @@ def main() -> None:
             st.caption(f"워드클라우드 폰트: `{word_font}`")
         else:
             st.warning(
-                "한글 폰트(malgun.ttf / AppleGothic)를 찾지 못했습니다. "
-                "워드클라우드에서 한글이 네모로 보일 수 있습니다."
+                "프로젝트 `fonts/NanumGothic-Regular.ttf` 또는 시스템 한글 폰트를 찾지 못했습니다. "
+                "나눔고딕 TTF를 `fonts/`에 넣고 다시 배포하세요."
             )
+
+        with st.expander("워드클라우드 한글이 네모일 때 (폰트 점검)", expanded=False):
+            p = _PRIMARY_BUNDLED_FONT
+            st.markdown(
+                f"- **앱 기준 경로:** `{_APP_DIR}`\n"
+                f"- **번들 폰트 파일:** `{p}`\n"
+                f"- **존재:** `{p.is_file()}`\n"
+            )
+            if p.is_file():
+                sz = p.stat().st_size
+                st.markdown(
+                    f"- **크기:** `{sz:,}` bytes "
+                    f"(Git LFS 포인터는 보통 100~200바이트입니다. 실제 TTF는 **1MB 이상**이어야 합니다.)\n"
+                    f"- **PIL 로드:** `{_pil_truetype_ok(str(p.resolve()))}`\n"
+                    f"- **한글 음절 cmap:** `{_font_cmap_contains_hangul(str(p.resolve()))}`\n"
+                )
+            cands = iter_wordcloud_font_candidates(word_font)
+            st.markdown(f"- **실제 사용 후보 순서:** `{cands}`")
 
         st.plotly_chart(
             fig_top_words_bar(total_word_counter, 20, "전체 — 가장 많이 쓴 단어 TOP 20"),
@@ -1072,6 +1270,11 @@ def main() -> None:
         wc_buf = build_wordcloud_image(cloud_freq, word_font)
         if wc_buf is not None:
             st.image(wc_buf, use_container_width=True)
+        elif cloud_freq:
+            st.caption(
+                "워드클라우드 이미지를 만들지 못했습니다. "
+                "`fonts/NanumGothic-Regular.ttf`가 앱과 같은 폴더 구조로 배포됐는지 확인하세요."
+            )
         else:
             st.caption("워드클라우드를 그릴 만한 단어가 없습니다.")
 
