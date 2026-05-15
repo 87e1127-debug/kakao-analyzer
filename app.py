@@ -216,31 +216,66 @@ section.main [data-testid="stMetric"] [data-testid="stMetricValue"] > div {
 
 TAB_HOVER_PURPLE_CSS = """
 <style>
-/* st.tabs: 호버 시 빨간 강조 → 보라 (메인 영역만) */
-section.main .stTabs [data-baseweb="tab"]:hover,
-section.main .stTabs [data-baseweb="tab"]:focus {
+/* st.tabs — 라벨이 <p>로 나와도 호버/포커스 시 글자·자식 전부 보라 */
+[data-testid="stTabs"] a:hover,
+[data-testid="stTabs"] a:hover p,
+[data-testid="stTabs"] a:hover * {
     color: #5b21b6 !important;
+    -webkit-text-fill-color: #5b21b6 !important;
 }
-section.main .stTabs [data-baseweb="tab"]:hover p,
-section.main .stTabs [data-baseweb="tab"]:hover div,
-section.main .stTabs [data-baseweb="tab"]:focus p,
-section.main .stTabs [data-baseweb="tab"]:focus div {
+
+[data-testid="stTabs"] [role="tab"]:hover,
+[data-testid="stTabs"] [role="tab"]:hover p,
+[data-testid="stTabs"] [role="tab"]:hover span,
+[data-testid="stTabs"] [role="tab"]:hover div,
+[data-testid="stTabs"] [role="tab"]:hover *,
+[data-testid="stTabs"] [role="tab"]:focus,
+[data-testid="stTabs"] [role="tab"]:focus p,
+[data-testid="stTabs"] [role="tab"]:focus * {
     color: #5b21b6 !important;
+    -webkit-text-fill-color: #5b21b6 !important;
 }
-section.main .stTabs [data-baseweb="tab-highlight"] {
+
+[data-testid="stTabs"] button:hover,
+[data-testid="stTabs"] button:hover p,
+[data-testid="stTabs"] button:hover span,
+[data-testid="stTabs"] button:hover div,
+[data-testid="stTabs"] button:hover *,
+[data-testid="stTabs"] button:focus-visible,
+[data-testid="stTabs"] button:focus-visible p,
+[data-testid="stTabs"] button:focus-visible * {
+    color: #5b21b6 !important;
+    -webkit-text-fill-color: #5b21b6 !important;
+}
+
+.stTabs [data-baseweb="tab"]:hover,
+.stTabs [data-baseweb="tab"]:hover p,
+.stTabs [data-baseweb="tab"]:hover span,
+.stTabs [data-baseweb="tab"]:hover *,
+.stTabs [data-baseweb="tab"]:focus,
+.stTabs [data-baseweb="tab"]:focus p,
+.stTabs [data-baseweb="tab"]:focus * {
+    color: #5b21b6 !important;
+    -webkit-text-fill-color: #5b21b6 !important;
+}
+
+[data-testid="stTabs"] [data-baseweb="tab-highlight"],
+.stTabs [data-baseweb="tab-highlight"] {
     background-color: #7c3aed !important;
-}
-section.main [data-testid="stTabs"] button:hover,
-section.main [data-testid="stTabs"] button:focus-visible {
-    color: #5b21b6 !important;
-    border-color: #7c3aed !important;
-    outline-color: #a78bfa !important;
 }
 </style>
 """
 
 
-DASH_USER_ACCENTS = ("#4f46e5", "#0d9488", "#db2777", "#d97706", "#7c3aed", "#059669")
+# 참여자 카드: (그라데이션 시작·끝 배경, 이름 글자색) — 파스텔 배경 + 읽기 쉬운 톤
+DASH_USER_CARD_THEMES: tuple[tuple[str, str, str], ...] = (
+    ("#eef2ff", "#e0e7ff", "#4338ca"),
+    ("#ecfdf5", "#d1fae5", "#047857"),
+    ("#fdf2f8", "#fce7f3", "#9d174d"),
+    ("#fffbeb", "#fef3c7", "#b45309"),
+    ("#f5f3ff", "#ede9fe", "#5b21b6"),
+    ("#ecfeff", "#cffafe", "#0e7490"),
+)
 
 
 def inject_dashboard_metric_styles() -> None:
@@ -971,9 +1006,9 @@ def main() -> None:
         initial_sidebar_state="expanded",
     )
 
-    if not st.session_state.get("_tab_purple_hover_css_loaded"):
+    if not st.session_state.get("_tab_purple_hover_css_v2"):
         inject_tab_purple_hover_styles()
-        st.session_state["_tab_purple_hover_css_loaded"] = True
+        st.session_state["_tab_purple_hover_css_v2"] = True
 
     with st.sidebar:
         st.markdown("## 💬 카카오톡 대화 분석기")
@@ -1153,13 +1188,15 @@ def main() -> None:
             cols = st.columns(len(row_df))
             for j, (_, srow) in enumerate(row_df.iterrows()):
                 u = str(srow["User"])
-                accent = DASH_USER_ACCENTS[(i + j) % len(DASH_USER_ACCENTS)]
+                bg_a, bg_b, name_color = DASH_USER_CARD_THEMES[
+                    (i + j) % len(DASH_USER_CARD_THEMES)
+                ]
                 with cols[j]:
                     with st.container(border=True):
                         st.markdown(
                             f'<p style="margin:0 0 10px 0;padding:8px 10px;border-radius:10px;'
-                            f"background:linear-gradient(90deg,{accent}18,{accent}08);"
-                            f'color:{accent};font-weight:700;font-size:1.05rem;">'
+                            f"background:linear-gradient(90deg,{bg_a},{bg_b});"
+                            f'color:{name_color};font-weight:700;font-size:1.05rem;">'
                             f"👤 {html.escape(u)}"
                             "</p>",
                             unsafe_allow_html=True,
