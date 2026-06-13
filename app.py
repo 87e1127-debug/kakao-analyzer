@@ -304,6 +304,12 @@ def inject_dashboard_styles() -> None:
         .stTabs [data-baseweb="tab-highlight"] {
             background-color: #AB63FA !important;
         }
+        .stTabs button[data-baseweb="tab"] {
+            font-size: 1.25rem;
+        }
+        .stTabs button[data-baseweb="tab"] > div[data-testid="stMarkdownContainer"] > p {
+            font-size: 1.25rem;
+        }
         .stTabs button[data-baseweb="tab"]:hover,
         .stTabs button[data-baseweb="tab"]:hover > div[data-testid="stMarkdownContainer"] > p {
             color: #AB63FA !important;
