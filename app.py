@@ -2,7 +2,14 @@ import os
 import platform
 import re
 from collections import Counter
+from pathlib import Path
 
+_PROJECT_DIR = Path(__file__).resolve().parent
+os.environ.setdefault("MPLCONFIGDIR", str(_PROJECT_DIR / ".matplotlib_cache"))
+
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.express as px
@@ -22,20 +29,96 @@ NEW_CONVERSATION_GAP = pd.Timedelta(hours=6)
 READ_IGNORE_THRESHOLD = pd.Timedelta(hours=1)
 
 
-def get_korean_font_path() -> str | None:
+def _unique_existing_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    existing: list[str] = []
+    for path in paths:
+        normalized = str(Path(path).resolve())
+        if normalized in seen or not os.path.isfile(normalized):
+            continue
+        seen.add(normalized)
+        existing.append(normalized)
+    return existing
+
+
+def get_korean_font_candidates() -> list[str]:
+    bundled_name = "assets/fonts/NotoSansKR-Regular.otf"
+    candidates: list[str] = []
+
+    for root in (_PROJECT_DIR, Path.cwd()):
+        candidates.append(str((root / bundled_name).resolve()))
+
     system = platform.system()
     if system == "Windows":
         windir = os.environ.get("WINDIR", r"C:\Windows")
-        font_path = os.path.join(windir, "Fonts", "malgun.ttf")
-        return font_path if os.path.exists(font_path) else None
-    if system == "Darwin":
-        for path in (
-            "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
-            "/Library/Fonts/AppleGothic.ttf",
-        ):
-            if os.path.exists(path):
-                return path
-    return None
+        candidates.extend(
+            [
+                os.path.join(windir, "Fonts", "malgun.ttf"),
+                os.path.join(windir, "Fonts", "malgunbd.ttf"),
+            ]
+        )
+    elif system == "Darwin":
+        candidates.extend(
+            [
+                "/System/Library/Fonts/Supplemental/AppleGothic.ttf",
+                "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                "/Library/Fonts/AppleGothic.ttf",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            ]
+        )
+
+    preferred_names = [
+        "Apple SD Gothic Neo",
+        "AppleGothic",
+        "Malgun Gothic",
+        "NanumGothic",
+        "Noto Sans CJK KR",
+        "Noto Sans KR",
+    ]
+    import matplotlib.font_manager as fm
+
+    for name in preferred_names:
+        try:
+            candidates.append(fm.findfont(name, fallback_to_default=False))
+        except (ValueError, OSError):
+            continue
+
+    for font in fm.fontManager.ttflist:
+        if any(keyword in font.name for keyword in ("Gothic", "Nanum", "Malgun", "Noto Sans KR")):
+            if "Hiragino" not in font.name:
+                candidates.append(font.fname)
+
+    return _unique_existing_paths(candidates)
+
+
+def build_wordcloud(word_frequencies: dict[str, int]) -> WordCloud:
+    last_error: Exception | None = None
+    for font_path in get_korean_font_candidates():
+        try:
+            return WordCloud(
+                font_path=font_path,
+                width=900,
+                height=450,
+                background_color="white",
+                colormap="Set2",
+                max_words=80,
+                prefer_horizontal=0.7,
+            ).generate_from_frequencies(word_frequencies)
+        except (OSError, ValueError) as exc:
+            last_error = exc
+            continue
+
+    message = "한글 폰트를 찾지 못해 워드클라우드를 생성할 수 없습니다."
+    if last_error is not None:
+        message = f"{message} ({last_error})"
+    raise RuntimeError(message)
 
 
 def should_exclude_message(message: str) -> bool:
@@ -218,6 +301,13 @@ def inject_dashboard_styles() -> None:
         .dashboard-card-danger  { border-left: 4px solid #EF553B; background: linear-gradient(135deg, #EF553B14 0%, #EF553B06 100%); }
         .dashboard-card-purple  { border-left: 4px solid #AB63FA; background: linear-gradient(135deg, #AB63FA14 0%, #AB63FA06 100%); }
         .dashboard-card-cyan    { border-left: 4px solid #19D3F3; background: linear-gradient(135deg, #19D3F314 0%, #19D3F306 100%); }
+        .stTabs [data-baseweb="tab-highlight"] {
+            background-color: #AB63FA !important;
+        }
+        .stTabs button[data-baseweb="tab"]:hover,
+        .stTabs button[data-baseweb="tab"]:hover > div[data-testid="stMarkdownContainer"] > p {
+            color: #AB63FA !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -334,13 +424,13 @@ longest_idx = df["MessageLength"].idxmax()
 longest_row = df.loc[longest_idx]
 participants = sorted(df["User"].dropna().unique())
 
+inject_dashboard_styles()
+
 tab_stats, tab_time, tab_words, tab_reply = st.tabs(
     ["📊 기본 통계", "🕐 시간 분석", "📝 단어 분석", "⏱️ 답장 속도"]
 )
 
 with tab_stats:
-    inject_dashboard_styles()
-
     valid_dates = df["Date"].dropna()
     total_messages = len(df)
     total_chars = int(df["MessageLength"].sum())
@@ -681,27 +771,20 @@ with tab_words:
                 user_chart.update_layout(showlegend=False, height=360)
                 st.plotly_chart(user_chart, use_container_width=True)
 
-        font_path = get_korean_font_path()
-        if font_path is None:
-            st.warning("한글 폰트를 찾지 못해 워드클라우드를 생성할 수 없습니다.")
-        else:
-            wc = WordCloud(
-                font_path=font_path,
-                width=900,
-                height=450,
-                background_color="white",
-                colormap="Set2",
-                max_words=80,
-                prefer_horizontal=0.7,
-            ).generate_from_frequencies(dict(all_word_counts.most_common(80)))
-
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.imshow(wc, interpolation="bilinear")
-            ax.axis("off")
-            fig.patch.set_facecolor("white")
-            st.markdown("#### ☁️ 워드클라우드")
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
+        st.markdown("#### ☁️ 워드클라우드")
+        try:
+            with st.spinner("워드클라우드를 생성하는 중..."):
+                wc = build_wordcloud(dict(all_word_counts.most_common(80)))
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.imshow(wc, interpolation="bilinear")
+                ax.axis("off")
+                fig.patch.set_facecolor("white")
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+        except RuntimeError as exc:
+            st.warning(str(exc))
+        except Exception as exc:
+            st.error(f"워드클라우드 생성 중 오류가 발생했습니다: {exc}")
 
     st.markdown("#### ㅋ / ㅎ 포함 메시지 비교")
     laugh_df = df.copy()
